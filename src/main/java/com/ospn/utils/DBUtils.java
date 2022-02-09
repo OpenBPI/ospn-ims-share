@@ -1,30 +1,28 @@
 package com.ospn.utils;
 
 import com.mchange.v2.c3p0.ComboPooledDataSource;
-import com.ospn.Constant;
-import com.ospn.common.ECUtils;
+import com.ospn.core.IMDb;
+import com.ospn.data.Constant;
 import com.ospn.data.*;
 
-import javax.jws.soap.SOAPBinding;
 import java.sql.*;
 import java.util.ArrayList;
-import java.util.Base64;
 import java.util.List;
-import java.util.Set;
 
 import static com.ospn.common.OsnUtils.logError;
 import static com.ospn.common.OsnUtils.logInfo;
 
-public class DBUtils {
+public class DBUtils implements IMDb {
     private static ComboPooledDataSource comboPooledDataSource = null;
 
     public void initDB(){
         comboPooledDataSource = new ComboPooledDataSource();
         try {
-            String url01 = comboPooledDataSource.getJdbcUrl().substring(0,comboPooledDataSource.getJdbcUrl().indexOf("?"));
+            String jdbcUrl = comboPooledDataSource.getJdbcUrl();
+            String url01 = jdbcUrl.substring(0,jdbcUrl.indexOf("?"));
             String datasourceName = url01.substring(url01.lastIndexOf("/")+1);
 
-            String jdbc = comboPooledDataSource.getJdbcUrl().replace(datasourceName, "");
+            String jdbc = jdbcUrl.replace(datasourceName, "");
             Connection connection = DriverManager.getConnection(jdbc, comboPooledDataSource.getUser(), comboPooledDataSource.getPassword());
             Statement statement = connection.createStatement();
 
@@ -47,18 +45,12 @@ public class DBUtils {
                     "CREATE TABLE IF NOT EXISTS t_service " +
                             "(id INTEGER NOT NULL PRIMARY KEY AUTO_INCREMENT, " +
                             " osnID char(128) NOT NULL, " +
-                            " sedID char(128), " +
-                            " sedKey char(255), " +
-                            " seed char(128), " +
                             " privateKey char(255) NOT NULL, " +
                             " createTime bigint)",
 
                     "CREATE TABLE IF NOT EXISTS t_group " +
                             "(id INTEGER NOT NULL PRIMARY KEY AUTO_INCREMENT, " +
                             " osnID char(128) NOT NULL UNIQUE, " +
-                            " sedID char(128), " +
-                            " sedKey char(255), " +
-                            " seed char(128), " +
                             " name text NOT NULL, " +
                             " owner char(128) NOT NULL, " +
                             " privateKey char(255) NOT NULL, " +
@@ -66,13 +58,14 @@ public class DBUtils {
                             " type tinyint default 0, " +
                             " joinType tinyint default 0, " +
                             " passType tinyint default 0, " +
-                            " maxMember int default 200, "+
-                            " createTime bigint)",
+                            " maxMember int default 200, " +
+                            " createTime bigint ," +
+                            " aesKey char(128) NOT NULL, " +           //added by CESHI
+                            " owner2 char(128))",       // add by CESHI 企业所有者
 
                     "CREATE TABLE IF NOT EXISTS t_groupMember " +
                             "(id INTEGER NOT NULL PRIMARY KEY AUTO_INCREMENT, " +
                             " osnID char(128) NOT NULL, " +
-                            " seed char(128), " +
                             " groupID char(128) NOT NULL, " +
                             " remarks nvarchar(128), " + //add 2020.12.8
                             " nickName nvarchar(20), " + //add 2020.12.8
@@ -80,14 +73,12 @@ public class DBUtils {
                             " mute tinyint default 0, " +
                             " inviter char(128) NOT NULL, " +
                             " state tinyint default 0, "+
-                            " createTime bigint)",
+                            " createTime bigint, " +
+                            " receiverKey char(255) NOT NULL)",  //added by CESHI
 
                     "CREATE TABLE IF NOT EXISTS t_user " +
                             "(id INTEGER NOT NULL PRIMARY KEY AUTO_INCREMENT, " +
                             " osnID char(128) NOT NULL UNIQUE, " +
-                            " sedID char(128), " +
-                            " sedKey char(255), " +
-                            " seed char(128), " +
                             " privateKey char(255) NOT NULL, " +
                             " name nvarchar(20) NOT NULL, " +
                             " displayName nvarchar(20) NOT NULL, " +
@@ -98,13 +89,13 @@ public class DBUtils {
                             " portrait text, " +
                             " describes text, " + //add 2020.12.8
                             " password varchar(64) NOT NULL, "+
-                            " createTime bigint)",
+                            " createTime bigint, " +
+                            " owner2 char(128))",       // add by CESHI 企业所有者
 
                     "CREATE TABLE IF NOT EXISTS t_friend " +
                             "(id INTEGER NOT NULL PRIMARY KEY AUTO_INCREMENT, " +
                             " osnID char(128) NOT NULL, " +
                             " friendID char(128) NOT NULL, " +
-                            " seed char(128), " +
                             " remarks nvarchar(128), " + //add 2020.12.8
                             " state tinyint DEFAULT 0, "+
                             " createTime bigint)",
@@ -119,7 +110,8 @@ public class DBUtils {
                             " hash char(128) NOT NULL, " +
                             " hash0 char(128), " +
                             " data text NOT NULL, "+
-                            " createTime bigint)",
+                            " createTime bigint, "+
+                            " readed tinyint DEFAULT 0)",       // add by CESHI
 
                     "CREATE TABLE IF NOT EXISTS t_receipt " +
                             "(id INTEGER NOT NULL PRIMARY KEY AUTO_INCREMENT, " +
@@ -138,14 +130,12 @@ public class DBUtils {
                             " userID char(128) NOT NULL, " +
                             " target char(128) NOT NULL, " +
                             " data text NOT NULL, "+
-                            " createTime bigint)",
+                            " createTime bigint, "+
+                            " unique index i_conversation(userID,target))",
 
                     "CREATE TABLE IF NOT EXISTS t_litapp " +
                             "(id INTEGER NOT NULL PRIMARY KEY AUTO_INCREMENT, " +
                             " osnID char(128) NOT NULL UNIQUE, " +
-                            " sedID char(128), " +
-                            " sedKey char(255), " +
-                            " seed char(128), " +
                             " name nvarchar(20) NOT NULL, " +
                             " displayName nvarchar(20) NOT NULL, " +
                             " privateKey char(255) NOT NULL, " +
@@ -159,7 +149,6 @@ public class DBUtils {
                     "CREATE TABLE IF NOT EXISTS t_osnid " +
                             "(id INTEGER NOT NULL PRIMARY KEY AUTO_INCREMENT, " +
                             " osnID char(128) NOT NULL UNIQUE, " +
-                            " seed char(128), " +
                             " timeNewly bigint NOT NULL, " +
                             " timeChange bigint NOT NULL, " +
                             " tip char(32), "+
@@ -205,18 +194,20 @@ public class DBUtils {
                     "alter table t_message add column createTime bigint",
                     "alter table t_receipt add column createTime bigint",
                     "alter table t_conversation add column createTime bigint",
+					"alter table t_conversation add unique index i_conversation(userID,target)",
                     "alter table t_litapp add column createTime bigint",
                     "alter table t_osnid add column createTime bigint",
                     "alter table t_syncinfo add column createTime bigint",
+                    "alter table t_user add column loginTime bigint",
+                    "alter table t_user add column logoutTime bigint"
             };
             Connection connection = comboPooledDataSource.getConnection();
             Statement stmt = connection.createStatement();
             for(String sql : sqls) {
                 try {
                     stmt.executeUpdate(sql);
-                }
-                catch (Exception e){
-                    logError(e + ": " + sql);
+                } catch (Exception e){
+                    //logError(e + ": " + sql);
                 }
             }
             stmt.close();
@@ -266,6 +257,8 @@ public class DBUtils {
             userData.maxGroup = rs.getInt("maxGroup");
             userData.portrait = rs.getString("portrait");
             userData.urlSpace = rs.getString("urlSpace");
+            userData.loginTime = rs.getLong("loginTime");
+            userData.logoutTime = rs.getLong("logoutTime");
             userData.createTime = rs.getLong("createTime");
             return userData;
         }
@@ -418,7 +411,7 @@ public class DBUtils {
         PreparedStatement statement = null;
         ResultSet rs = null;
         try {
-            String sql = "insert into t_group(osnID,name,privateKey,owner,portrait,createTime) values(?,?,?,?,?,?)";
+            String sql = "insert into t_group(osnID,name,privateKey,owner,portrait,createTime,aesKey) values(?,?,?,?,?,?,?)";
             connection = comboPooledDataSource.getConnection();
             statement = connection.prepareStatement(sql);
             statement.setString(1,group.osnID);
@@ -427,6 +420,7 @@ public class DBUtils {
             statement.setString(4,group.owner);
             statement.setString(5,group.portrait);
             statement.setLong(6,System.currentTimeMillis());
+            statement.setString(7, group.aesKey);    //add by CESHI
             int count = statement.executeUpdate();
             return count != 0;
         }
@@ -597,7 +591,7 @@ public class DBUtils {
         PreparedStatement statement = null;
         ResultSet rs = null;
         try {
-            String sql = "insert into t_groupMember(osnID,groupID,type,inviter,createTime) values(?,?,?,?,?)";
+            String sql = "insert into t_groupMember(osnID,groupID,type,inviter,createTime,receiverKey) values(?,?,?,?,?,?)";
             connection = comboPooledDataSource.getConnection();
             statement = connection.prepareStatement(sql);
             statement.setString(1,memberData.osnID);
@@ -605,6 +599,7 @@ public class DBUtils {
             statement.setInt(3,memberData.type);
             statement.setString(4,memberData.inviter);
             statement.setLong(5,System.currentTimeMillis());
+            statement.setString(6,memberData.receiverKey); //add by CESH
             int count = statement.executeUpdate();
             return count != 0;
         }
@@ -833,7 +828,7 @@ public class DBUtils {
         PreparedStatement statement = null;
         ResultSet rs = null;
         try {
-            String sql = "insert into t_user (osnID,privateKey,name,displayName,aesKey,msgKey,password,urlSpace,createTime) values(?,?,?,?,?,?,?,?,?)";
+            String sql = "insert into t_user (osnID,privateKey,name,displayName,aesKey,msgKey,password,urlSpace,createTime,owner2) values(?,?,?,?,?,?,?,?,?,?)";
             connection = comboPooledDataSource.getConnection();
             statement = connection.prepareStatement(sql);
             statement.setString(1,userData.osnID);
@@ -845,6 +840,7 @@ public class DBUtils {
             statement.setString(7,userData.password);
             statement.setString(8,userData.urlSpace);
             statement.setLong(9,System.currentTimeMillis());
+            statement.setString(10,userData.owner2);
             int count = statement.executeUpdate();
             //OsnUtils.logInfo(userData.osnID + ", name: "+userData.name);
             return count != 0;
@@ -885,6 +881,26 @@ public class DBUtils {
         }
         return false;
     }
+    public boolean deleteUser(String osnID){
+        Connection connection = null;
+        PreparedStatement statement = null;
+        ResultSet rs = null;
+        try {
+            String sql = "delete from t_user where osnID=?";
+            connection = comboPooledDataSource.getConnection();
+            statement = connection.prepareStatement(sql);
+            statement.setString(1,osnID);
+            int count = statement.executeUpdate();
+            return count != 0;
+        }
+        catch (Exception e){
+            logError(e);
+        }
+        finally {
+            closeDB(connection,statement,rs);
+        }
+        return false;
+    }
     public boolean updateUser(UserData userData, List<String> keys){
         Connection connection = null;
         PreparedStatement statement = null;
@@ -903,6 +919,8 @@ public class DBUtils {
                     case "maxGroup":columns.append("maxGroup=?");break;
                     case "password":columns.append("password=?");break;
                     case "urlSpace":columns.append("urlSpace=?");break;
+                    case "loginTime":columns.append("loginTime=?");break;
+                    case "logoutTime":columns.append("logoutTime=?");break;
                 }
             }
             if(columns.length() == 0){
@@ -923,6 +941,8 @@ public class DBUtils {
                     case "maxGroup":statement.setInt(index++,userData.maxGroup);break;
                     case "password":statement.setString(index++,userData.password);break;
                     case "urlSpace":statement.setString(index++,userData.urlSpace);break;
+                    case "loginTime":statement.setLong(index++,userData.loginTime);break;
+                    case "logoutTime":statement.setLong(index++,userData.logoutTime);break;
                 }
             }
             statement.setString(index,userData.osnID);
@@ -1244,7 +1264,7 @@ public class DBUtils {
             statement.setString(2,userID);
             rs = statement.executeQuery();
             if(rs.next()){
-                return rs.getInt(0);
+                return rs.getInt(1);
             }
         }
         catch (Exception e){
@@ -1350,6 +1370,30 @@ public class DBUtils {
             closeDB(connection,statement,rs);
         }
         return messageData;
+    }
+    public int getUnreadCount(String userID, long timestamp){
+        Connection connection = null;
+        PreparedStatement statement = null;
+        ResultSet rs = null;
+        int count = 0;
+        try {
+            String sql = "select count(*) from t_message where cmd='Message' and timeStamp>? and toID=?";
+            connection = comboPooledDataSource.getConnection();
+            statement = connection.prepareStatement(sql);
+            statement.setLong(1,timestamp);
+            statement.setString(2,userID);
+            rs = statement.executeQuery();
+            if(rs.next()){
+                count = rs.getInt(1);
+            }
+        }
+        catch (Exception e){
+            logError(e);
+        }
+        finally {
+            closeDB(connection,statement,rs);
+        }
+        return count;
     }
 
     public boolean insertReceipt(MessageData messageData){

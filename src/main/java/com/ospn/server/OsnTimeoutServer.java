@@ -1,6 +1,5 @@
 package com.ospn.server;
 
-import com.ospn.common.OsnUtils;
 import com.ospn.OsnIMServer;
 import com.ospn.core.IMData;
 import com.ospn.data.CryptData;
@@ -13,7 +12,7 @@ import java.util.List;
 
 import static com.ospn.common.OsnUtils.logError;
 import static com.ospn.common.OsnUtils.logInfo;
-import static com.ospn.core.IMData.*;
+import static com.ospn.core.IMData.delSessionData;
 
 public class OsnTimeoutServer {
     public static void worker(){
@@ -47,7 +46,7 @@ public class OsnTimeoutServer {
         try {
             while(true) {
                 Thread.sleep(60 * 60 * 1000);
-                CryptData cryptData = db.getServiceID();
+                CryptData cryptData = OsnIMServer.db.getServiceID();
                 if (cryptData == null)
                     logError("db connection lost");
             }

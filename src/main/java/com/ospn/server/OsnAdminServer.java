@@ -16,11 +16,10 @@ import io.netty.handler.codec.http.*;
 import java.io.FileInputStream;
 import java.util.*;
 
-import static com.ospn.Constant.*;
-import static com.ospn.OsnIMServer.Inst;
-import static com.ospn.OsnIMServer.main;
-import static com.ospn.common.OsnUtils.*;
 import static com.ospn.core.IMData.*;
+import static com.ospn.data.Constant.*;
+import static com.ospn.OsnIMServer.Inst;
+import static com.ospn.common.OsnUtils.*;
 import static com.ospn.utils.CryptUtils.checkMessage;
 import static com.ospn.utils.CryptUtils.makeMessage;
 import static io.netty.util.CharsetUtil.UTF_8;
@@ -30,7 +29,7 @@ public class OsnAdminServer extends SimpleChannelInboundHandler<FullHttpRequest>
     private static final String versionInfo = "v1.1 2021-3-27, base line, long link, findOsnID verify, osnid sync, keywordFilter";
 
     public OsnAdminServer() {
-        adminKey = prop.getProperty("adminKey");
+        adminKey = OsnIMServer.prop.getProperty("adminKey");
     }
 
     public static UserData RegsiterUser(String userName, String password) {
@@ -45,7 +44,7 @@ public class OsnAdminServer extends SimpleChannelInboundHandler<FullHttpRequest>
         userData.msgKey = Base64.getEncoder().encodeToString(sha256(String.valueOf(System.currentTimeMillis()).getBytes()));
         userData.displayName = userName;
         userData.urlSpace = urlSpace;
-        if (!db.insertUser(userData))
+        if (!OsnIMServer.db.insertUser(userData))
             return null;
         return userData;
     }
@@ -174,7 +173,7 @@ public class OsnAdminServer extends SimpleChannelInboundHandler<FullHttpRequest>
 
             if (username == null || password == null)
                 return replay(E_missData, null);
-            else if (db.isRegisterName(username)) {
+            else if (OsnIMServer.db.isRegisterName(username)) {
                 UserData userData = db.readUserByName(username);
                 json = new JSONObject();
                 json.put("osnID", userData.osnID);
@@ -261,7 +260,7 @@ public class OsnAdminServer extends SimpleChannelInboundHandler<FullHttpRequest>
             LitappData litappDataNew = getLitappData(litappData.osnID);
             if (litappDataNew != null)
                 logError("exists litappID: " + litappData.osnID);
-            if (!db.insertLitapp(litappData))
+            if (!OsnIMServer.db.insertLitapp(litappData))
                 return replay(E_dataBase, null);
             logInfo("name: " + litappData.name + ", serviceID: " + litappData.osnID);
             litappMap.put(litappData.osnID, litappData);
@@ -286,7 +285,7 @@ public class OsnAdminServer extends SimpleChannelInboundHandler<FullHttpRequest>
                 return replay(E_dataNoFind, null);
             }
 
-            if (!db.deleteLitapp(osnID))
+            if (!OsnIMServer.db.deleteLitapp(osnID))
                 return replay(E_dataBase, null);
             logInfo("osnID: " + osnID);
             litappMap.remove(osnID);
@@ -306,7 +305,7 @@ public class OsnAdminServer extends SimpleChannelInboundHandler<FullHttpRequest>
                 data.put("litappList", Collections.singletonList(litappData));
                 logInfo("data: " + litappData);
             } else {
-                List<LitappData> litappDataList = db.listLitapp();
+                List<LitappData> litappDataList = OsnIMServer.db.listLitapp();
                 data.put("litappList", litappDataList);
                 logInfo("size: " + litappDataList.size());
             }
@@ -370,6 +369,22 @@ public class OsnAdminServer extends SimpleChannelInboundHandler<FullHttpRequest>
             return replay(new ErrorData("-1", e.toString()), null);
         }
     }
+    private JSONObject getUnreadCount(JSONObject json) {
+        try {
+            String userID = json.getString("userID");
+            long timestamp = json.getLongValue("timestamp");
+            if(userID == null){
+                return replay(E_missData, null);
+            }
+            int count = OsnIMServer.db.getUnreadCount(userID, timestamp);
+            JSONObject data = new JSONObject();
+            data.put("count", count);
+            return replay(null, data.toString());
+        } catch (Exception e) {
+            logError(e);
+            return replay(new ErrorData("-1", e.toString()), null);
+        }
+    }
 
     public JSONObject handleAdmin(JSONObject json) {
         JSONObject result;
@@ -417,6 +432,9 @@ public class OsnAdminServer extends SimpleChannelInboundHandler<FullHttpRequest>
                     break;
                 case "setUserInfo":
                     result = setUserInfo(result);
+                    break;
+                case "getUnreadCount":
+                    result = getUnreadCount(result);
                     break;
                 default:
                     result = replay(E_errorCmd, null);

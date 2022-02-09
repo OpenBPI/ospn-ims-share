@@ -27,8 +27,9 @@ public class OsnIMSServer extends SimpleChannelInboundHandler<JSONObject> {
             UserData userData = sessionData.user;
             logInfo("user: " + (userData == null ? "null" : userData.name));
             delSessionData(sessionData);
+        } else {
+            ctx.close();
         }
-        ctx.close();
     }
 
     @Override

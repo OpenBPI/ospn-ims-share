@@ -8,8 +8,11 @@ import com.ospn.common.OsnSender;
 import com.ospn.common.OsnServer;
 import com.ospn.common.OsnUtils;
 import com.ospn.core.IMData;
+import com.ospn.core.LTPData;
 import com.ospn.data.*;
 import com.ospn.server.*;
+import com.ospn.utils.CryptUtils;
+import com.ospn.utils.DBUtils;
 import io.netty.channel.ChannelInitializer;
 import io.netty.channel.socket.SocketChannel;
 import io.netty.handler.codec.http.HttpObjectAggregator;
@@ -22,15 +25,17 @@ import java.io.*;
 import java.nio.charset.StandardCharsets;
 import java.util.*;
 
-import static com.ospn.Constant.*;
 import static com.ospn.common.OsnUtils.*;
+import static com.ospn.common.OsnUtils.logInfo;
 import static com.ospn.core.IMData.*;
 import static com.ospn.data.CommandData.*;
+import static com.ospn.data.Constant.*;
 import static com.ospn.data.FriendData.*;
 import static com.ospn.data.GroupData.*;
 import static com.ospn.data.MemberData.*;
 import static com.ospn.data.MessageData.toMessageData;
 import static com.ospn.utils.CryptUtils.*;
+import static com.ospn.utils.CryptUtils.makeMessage;
 
 public class OsnIMServer extends OsnServer {
     public static void main(String[] args) {
@@ -39,12 +44,16 @@ public class OsnIMServer extends OsnServer {
             OsnIMServer.Inst = new OsnIMServer();
             OsnIMServer.Inst.StartServer();
         } catch (Exception e) {
-            OsnUtils.logError(e);
+            logError(e);
         }
     }
 
     public static OsnSender osxSender = null;
     public static OsnIMServer Inst = null;
+    public static DBUtils db = new DBUtils();
+    public static Properties prop = new Properties();
+    public static String configFile = "ospn.properties";
+    public static LTPData ltpData = new LTPData();
 
     public static class JsonSender implements OsnSender.Callback {
         public void onDisconnect(OsnSender sender, String error) {
@@ -66,7 +75,10 @@ public class OsnIMServer extends OsnServer {
     }
     private void StartServer() {
         try {
-            IMData.init();
+            db.initDB();
+            prop.load(new FileInputStream(configFile));
+            IMData.init(db, prop);
+
             setCommand("1", "Heart", 0, Inst::Heart);
             setCommand("1", "Login", 0, Inst::Login);
             setCommand("1", "Logout", 0, Inst::Logout);
@@ -75,7 +87,7 @@ public class OsnIMServer extends OsnServer {
             setCommand("1", "DelFriend", NeedVerify | NeedOnline | NeedContent, Inst::DelFriend);
             setCommand("1", "AgreeFriend", NeedVerify | NeedReceipt | NeedOnline | NeedContent, Inst::AgreeFriend);
             setCommand("1", "RejectFriend", NeedVerify | NeedReceipt | NeedOnline | NeedContent, Inst::RejectFriend);
-            setCommand("1", "Message", NeedVerify | NeedReceipt | NeedRelated | NeedSave | NeedBlock, Inst::Message);
+            setCommand("1", "Message", NeedVerify | NeedReceipt | NeedSave | NeedBlock, Inst::Message);
             setCommand("1", "SetMessage", NeedVerify | NeedOnline | NeedSaveOut, Inst::SetMessage);
             setCommand("1", "Complete", NeedVerify, Inst::Complete);
             setCommand("1", "MessageSync", NeedVerify | NeedOnline | NeedContent, Inst::MessageSync);
@@ -91,8 +103,8 @@ public class OsnIMServer extends OsnServer {
             setCommand("1", "GroupInfo", 0, Inst::Forwarder);
             setCommand("1", "MemberInfo", 0, Inst::Forwarder);
             setCommand("1", "ServiceInfo", 0, Inst::Forwarder);
-            setCommand("1", "UserUpdate", NeedVerify | NeedReceipt | NeedSave | NeedRelated, Inst::Forwarder);
-            setCommand("1", "GroupUpdate", NeedVerify | NeedReceipt | NeedSave | NeedRelated, Inst::GroupUpdate);
+            setCommand("1", "UserUpdate", NeedVerify | NeedReceipt | NeedSave, Inst::Forwarder);
+            setCommand("1", "GroupUpdate", NeedVerify | NeedReceipt | NeedSave, Inst::GroupUpdate);
             setCommand("1", "InviteGroup", NeedVerify | NeedReceipt | NeedSaveOut, Inst::InviteGroup);
             setCommand("1", "GetFriendList", NeedVerify | NeedOnline, Inst::GetFriendList);
             setCommand("1", "GetGroupList", NeedVerify | NeedOnline, Inst::GetGroupList);
@@ -100,7 +112,7 @@ public class OsnIMServer extends OsnServer {
             setCommand("1", "CreateGroup", NeedVerify | NeedOnline, Inst::CreateGroup);
             setCommand("1", "GetGroupInfo", NeedVerify | NeedOnline, Inst::GetGroupInfo);
             setCommand("1", "SetGroupInfo", NeedVerify | NeedOnline, Inst::SetGroupInfo);
-            setCommand("1", "GetMemberInfo", NeedVerify | NeedOnline | NeedRelated, Inst::GetMemberInfo);
+            setCommand("1", "GetMemberInfo", NeedVerify | NeedOnline, Inst::GetMemberInfo);
             setCommand("1", "SetMemberInfo", NeedVerify | NeedOnline, Inst::SetMemberInfo);
             setCommand("1", "AddMember", NeedVerify | NeedReceipt | NeedOnline, Inst::AddMember);
             setCommand("1", "DelMember", NeedVerify | NeedReceipt | NeedOnline, Inst::DelMember);
@@ -120,6 +132,9 @@ public class OsnIMServer extends OsnServer {
             setCommand("1", "userCert", NeedVerify | NeedOnline | NeedContent, Inst::UserCert);
 
             //IMData.initExtention();
+
+
+
 
             AddService(imServicePort, new ChannelInitializer<SocketChannel>() {
                 @Override
@@ -150,6 +165,9 @@ public class OsnIMServer extends OsnServer {
             AddService(imWebsockPort, new ChannelInitializer<SocketChannel>() {
                 @Override
                 protected void initChannel(SocketChannel arg0) {
+                    if(isSsl()){
+                        AddCert(arg0, certPem, certKey);
+                    }
                     arg0.pipeline().addLast("http-codec", new HttpServerCodec());
                     arg0.pipeline().addLast("aggregator", new HttpObjectAggregator(65536));
                     arg0.pipeline().addLast("http-chunked", new ChunkedWriteHandler());
@@ -159,6 +177,9 @@ public class OsnIMServer extends OsnServer {
             AddService(imHttpPort, new ChannelInitializer<SocketChannel>() {
                 @Override
                 protected void initChannel(SocketChannel arg0) {
+                    if(isSsl()){
+                        AddCert(arg0, certPem, certKey);
+                    }
                     arg0.pipeline().addLast("http-codec", new HttpServerCodec());
                     arg0.pipeline().addLast("http-chunked", new ChunkedWriteHandler());
                     arg0.pipeline().addLast("handler", new OsnFileServer());
@@ -182,15 +203,60 @@ public class OsnIMServer extends OsnServer {
             OsnSyncServer.initServer();
 
             sendImsType();
+
+
+            // ---- add by CESHI ---- //
+            // 将serverID写入t_user表中
+            /*
+
+            UserData svData = new UserData();
+            svData.osnID = serviceID;
+            svData.osnKey = "";
+            svData.password = "";
+            svData.name = "";
+            svData.aesKey = "";
+            svData.displayName = "";
+            svData.msgKey = "";
+            svData.urlSpace = "";
+            db.insertUser(svData);
+            */
+            // ---- add by CESHI end ----//
+
+
+
+            // ---- add by CESHI ---- //
+            // 向超级id发送注册命令
+
+            /*
+            * command : register
+            * osnid:
+            * ip :
+            *
+            content.put("command", "register");
+            content.put("osnid", service.osnID);
+            content.put("ip", ipPeer);
+            content = CryptUtils.makeMessage("Message", service.osnID, manageID,
+                    content, service.osnKey, null);
+            sendUserJson(manageID, content);*/
+            //LTPData.sendMessage()
+            JSONObject content = new JSONObject();
+            content.put("command", "nodeRegister");
+            content.put("osnid", serviceID);
+            content.put("ip", ipIMServer);
+
+            logInfo("content:"+ content.toString());
+            JSONObject json = makeMessage("Message", serviceID, manageID, content, serviceKey, null);
+            sendUserJson(manageID, json);
+            // ---- add by CESHI end ---- //
+
         } catch (Exception e) {
-            OsnUtils.logError(e);
+            logError(e);
         }
     }
     public void pushOsnID(CryptData cryptData) {
         JSONObject json = new JSONObject();
         json.put("command", "pushOsnID");
         json.put("osnID", cryptData.osnID);
-//        json.put("osnKey", cryptData.osnKey);
         OsnIMServer.Inst.sendOsxJson(json);
         logInfo("osnID: " + cryptData.osnID);
     }
@@ -290,25 +356,25 @@ public class OsnIMServer extends OsnServer {
             UserData userData = getUserData(to);
             if (sessionData.remote) {
                 if (userData == null) {
-                    OsnUtils.logInfo("no my user: " + to);
+                    logInfo("no my user: " + to);
                     error = E_userNoFind;
                 } else {
                     sendClientJson(userData, json);
-                    OsnUtils.logInfo("recv remote: " + command + ", from: " + from + " to: " + to);
+                    logInfo("recv remote: " + command + ", from: " + from + " to: " + to);
                 }
             } else {
                 if (userData == null) {
                     sendOsxJson(json);
-                    OsnUtils.logInfo("send remote: " + command + ", from: " + from + ", to: " + to);
+                    logInfo("send remote: " + command + ", from: " + from + ", to: " + to);
                 } else {
                     sendClientJson(userData, json);
-                    OsnUtils.logInfo("recv local: " + command + ", from: " + from + ", to: " + to);
+                    logInfo("recv local: " + command + ", from: " + from + ", to: " + to);
                 }
             }
             return error;
         } catch (Exception e) {
             error = E_exception;
-            OsnUtils.logError(e);
+            logError(e);
         }
         return error;
     }
@@ -325,17 +391,17 @@ public class OsnIMServer extends OsnServer {
                 String sign = json.getString("sign");
                 logInfo("verify: " + command + ", hash: " + hash);
                 if (!ECUtils.osnVerify(userID, hash.getBytes(), sign))
-                    OsnUtils.logInfo("verify failed hash: " + hash);
+                    logInfo("verify failed hash: " + hash);
                 else
                     db.updateReceipt(hash, Constant.ReceiptStatus_Complete);
-            } else {
+            } else if(!imShare){
                 String hash = json.getString("hash");
                 CryptData cryptData = getCryptData(osnID);
                 if (cryptData == null) {
                     logInfo("no find osnID: " + osnID);
                     return;
                 }
-                OsnUtils.logInfo("send: " + command + ", userID: " + userID + ", hash: " + hash);
+                logInfo("send: " + command + ", userID: " + userID + ", hash: " + hash);
                 JSONObject data = new JSONObject();
                 data.put("hash", hash);
                 data.put("sign", ECUtils.osnSign(cryptData.osnKey, hash.getBytes()));
@@ -343,7 +409,7 @@ public class OsnIMServer extends OsnServer {
                 sendOsxJson(json);
             }
         } catch (Exception e) {
-            OsnUtils.logError(e);
+            logError(e);
         }
     }
     private void toWebMessage(SessionData sessionData, MessageData messageData) {
@@ -395,7 +461,7 @@ public class OsnIMServer extends OsnServer {
         JSONObject data = groupData.toJson();
         data.put("state", "NewlyGroup");
         JSONObject json = makeMessage("GroupUpdate", groupData.osnID, userID, data, groupData.osnKey, null);
-        OsnUtils.logInfo("userID: " + userID + ", groupID: " + groupData.osnID);
+        logInfo("userID: " + userID + ", groupID: " + groupData.osnID);
         sendUserJson(userID, json);
     }
     private void newlyMember(GroupData groupData, String userID) {
@@ -436,18 +502,18 @@ public class OsnIMServer extends OsnServer {
         userData.addGroup(groupID);
         MemberData memberData = new MemberData(userID, groupID, MemberType_Wait);
         if (!db.insertMember(memberData))
-            OsnUtils.logInfo("insertMember error");
+            logInfo("insertMember error");
     }
     private void newlyFriend(String userID, String friendID, FriendData friendData) {
         if (friendData != null) {
             friendData.state = FriendStatus_Normal;
             if (!db.updateFriend(friendData, Collections.singletonList("state"))) {
-                OsnUtils.logInfo("updateFriend error");
+                logInfo("updateFriend error");
                 return;
             }
         } else {
             if (!db.insertFriend(new FriendData(userID, friendID, FriendStatus_Normal))) {
-                OsnUtils.logInfo("insertFriend error");
+                logInfo("insertFriend error");
                 return;
             }
         }
@@ -464,7 +530,7 @@ public class OsnIMServer extends OsnServer {
         sendUserJson(userID, json);
     }
     private void applyMember(GroupData groupData, String userID, String originalUser, JSONObject json) {
-        OsnUtils.logInfo("userID: " + userID + ", originalUser: " + originalUser);
+        logInfo("userID: " + userID + ", originalUser: " + originalUser);
         JSONObject data = new JSONObject();
         data.put("originalUser", originalUser);
         data.put("userID", userID);
@@ -532,7 +598,7 @@ public class OsnIMServer extends OsnServer {
         JSONObject data = new JSONObject();
         data.put("originalUser", originalUser);
         JSONObject json = makeMessage("InviteGroup", groupData.osnID, userID, data, groupData.osnKey, null);
-        OsnUtils.logInfo("userID: " + userID + ", groupID: " + groupData.osnID);
+        logInfo("userID: " + userID + ", groupID: " + groupData.osnID);
 
         UserData userData = getUserData(userID);
         if (userData != null)
@@ -545,21 +611,42 @@ public class OsnIMServer extends OsnServer {
             for (String member : groupData.userList) {
                 JSONObject json = makeMessage("GroupUpdate", groupData.osnID, member, data, groupData.osnKey, null);
                 sendUserJson(member, json);
-                OsnUtils.logInfo("state: " + data.getString("state") + ", memberID: " + member);
+                logInfo("state: " + data.getString("state") + ", memberID: " + member);
             }
         } catch (Exception e) {
-            OsnUtils.logError(e);
+            logError(e);
         }
     }
     private void forwardGroup(GroupData groupData, JSONObject json) {
         String userID = json.getString("from");
-        OsnUtils.logInfo("forward group: [" + json.getString("command") + "] groupID: " + groupData.osnID + ", originalUser: " + json.getString("from"));
+        logInfo("forward group: [" + json.getString("command") + "] groupID: " + groupData.osnID + ", originalUser: " + json.getString("from"));
+
+        // ---- delete by CESHI ---- //
+        /*
         for (String u : groupData.userList) {
             if (u.equalsIgnoreCase(userID))
                 continue;
             JSONObject pack = packMessage(json, groupData.osnID, u, groupData.osnKey);
             sendUserJson(u, pack);
         }
+        */
+        // ---- delete by CESHI end ---- //
+
+        // ---- add by CESHI ---- //
+
+        // 1. 首先需要对content进行解密
+        // 2. 用groupdata里的aeskey来对content进行加密
+        String content = reEncryptContent(json, groupData.aesKey, groupData.osnKey);
+        // 3. 将content直接传入进行数据组合
+        for (MemberData md : groupData.members) {
+            if (md.osnID.equalsIgnoreCase(userID))
+                continue;
+            //    JSONObject pack1 = packMessage(json, groupData.osnID, md.osnID, groupData.osnKey);
+            JSONObject pack = packGroupMessage(json, groupData.osnID, md, groupData.osnKey, content);
+            sendUserJson(md.osnID, pack);
+        }
+
+        // ---- add by CESHI end ---- //
     }
     private JSONObject getStoreInfo(JSONObject json){
         String userID = json.getString("userID");
@@ -594,13 +681,18 @@ public class OsnIMServer extends OsnServer {
         }
         return data;
     }
+    private JSONObject wrapMessageX(String command, CryptData cryptData, String to, JSONObject data, JSONObject original){
+        if(imShare)
+            return wrapMessage(command, service.osnID, to, data, service.osnKey, original);
+        return wrapMessage(command, cryptData.osnID, to, data, cryptData.osnKey, original);
+    }
 
     private Void Heart(SessionData sessionData) {
         try {
             sessionData.timeHeart = System.currentTimeMillis();
             sendReplyCode(sessionData, null, null);
         } catch (Exception e) {
-            OsnUtils.logError(e);
+            logError(e);
         }
         return null;
     }
@@ -634,13 +726,103 @@ public class OsnIMServer extends OsnServer {
 
                 pushOsnID(userData);
             }
-            OsnUtils.logInfo("userName: " + username + ", osnID: " + (userData == null ? "null" : userData.osnID));
+            logInfo("userName: " + username + ", osnID: " + (userData == null ? "null" : userData.osnID));
         } catch (Exception e) {
-            OsnUtils.logError(e);
+            logError(e);
         }
         return null;
     }
-    private Void Login(SessionData sessionData) {
+    private Void Login_key(SessionData sessionData){
+        try {
+            JSONObject json = sessionData.json;
+            String userID = json.getString("user");
+            boolean isNameLogin = json.getString("type").equalsIgnoreCase("user");
+            UserData userData = isNameLogin ? getUserDataByName(userID) : getUserData(userID);
+            if (userData == null) {
+                logInfo("no register user: " + userID);
+                sendReplyCode(sessionData, E_userNoFind, null);
+                return null;
+            }
+            if (!json.containsKey("state")) {
+                logInfo("need state");
+                sendReplyCode(sessionData, E_missData, null);
+                return null;
+            }
+            String state = json.getString("state");
+            if (state.equalsIgnoreCase("request")) {
+                sessionData.challenge = System.currentTimeMillis();
+                sessionData.state = LoginState_Challenge;
+                sessionData.deviceID = json.getString("deviceID");
+                JSONObject data = new JSONObject();
+                data.put("challenge", sessionData.challenge);
+                String content = aesEncrypt(data.toString(), isNameLogin ? userData.password : userData.aesKey);
+                data.clear();
+                data.put("data", content);
+                sendReplyCode(sessionData, null, data);
+                logInfo("user: " + userID + ", state: " + state);
+                sessionMap.put(sessionData.ctx, sessionData);
+                return null;
+            } else if (state.equalsIgnoreCase("verify")) {
+                if (sessionData.state != LoginState_Challenge) {
+                    sendReplyCode(sessionData, E_stateError, null);
+                    return null;
+                }
+                String content = aesDecrypt(json.getString("data"), isNameLogin ? userData.password : userData.aesKey);
+                JSONObject data = JSON.parseObject(content);
+                if (!data.getString("user").equalsIgnoreCase(userID) ||
+                        data.getLongValue("challenge") != sessionData.challenge) {
+                    sendReplyCode(sessionData, E_verifyError, null);
+                    return null;
+                }
+                sessionData.state = LoginState_Finish;
+
+                JSONObject rData = new JSONObject();
+                rData.put("aesKey", userData.aesKey);
+                rData.put("msgKey", userData.msgKey);
+                rData.put("osnID", userData.osnID);
+                rData.put("osnKey", userData.osnKey);
+                rData.put("serviceID", service.osnID);
+
+                userMap.put(userData.osnID, userData);
+                if (userData.session != null) {
+                    if (userData.session.deviceID != null && sessionData.deviceID != null &&
+                            !sessionData.deviceID.equalsIgnoreCase(userData.session.deviceID)) {
+                        data = makeMessage("KickOff", service.osnID, userID, "{}", userData.osnKey, null);
+                        sendClientJson(userData.session, data);
+
+                        logInfo("KickOff userID: " + userID + ", deviceID: " + userData.session.deviceID);
+                    }
+                    //sessionMap.remove(userData.session.ctx);
+                    delSessionData(userData.session);
+                }
+                sessionMap.put(sessionData.ctx, sessionData);
+                synchronized (userLock) {
+                    userData.session = sessionData;
+                }
+                sessionData.user = userData;
+                sessionData.timeHeart = System.currentTimeMillis();
+                userData.loginTime = sessionData.timeHeart;
+                db.updateUser(userData, Collections.singletonList("loginTime"));
+
+                data.clear();
+                if(userData.logoutTime == 0){
+                    userData.logoutTime = System.currentTimeMillis();
+                }
+                rData.put("logoutTime", userData.logoutTime);
+                data.put("data", aesEncrypt(rData.toString(), isNameLogin ? userData.password : userData.aesKey));
+
+                sendReplyCode(sessionData, null, data);
+                logInfo("user: " + userData.osnID + ", name: " + userData.name);
+            } else {
+                sendReplyCode(sessionData, E_stateError, null);
+            }
+        } catch (Exception e) {
+            logError(e);
+        }
+        return null;
+    }
+    private Void Login_share(SessionData sessionData){
+
         try {
             JSONObject json = sessionData.json;
             String userID = json.getString("user");
@@ -665,14 +847,12 @@ public class OsnIMServer extends OsnServer {
                     return sendReplyCode(sessionData, E_dataBase, null);
                 }
             }
-            JSONObject data = new JSONObject();
-            data.put("serviceID", service.osnID);
 
             userMap.put(userData.osnID, userData);
             if (userData.session != null && userData.session != sessionData) {
                 if (userData.session.deviceID != null && sessionData.deviceID != null &&
                         !sessionData.deviceID.equalsIgnoreCase(userData.session.deviceID)) {
-                    data = makeMessage("KickOff", service.osnID, userID, "{}", userData.osnKey, null);
+                    JSONObject data = makeMessage("KickOff", service.osnID, userID, "{}", userData.osnKey, null);
                     sendClientJson(userData.session, data);
 
                     logInfo("KickOff userID: " + userID + ", deviceID: " + userData.session.deviceID);
@@ -685,16 +865,28 @@ public class OsnIMServer extends OsnServer {
             }
             sessionData.user = userData;
             sessionData.timeHeart = System.currentTimeMillis();
+            userData.loginTime = sessionData.timeHeart;
+            db.updateUser(userData, Collections.singletonList("loginTime"));
+
+            JSONObject data = new JSONObject();
+            data.put("serviceID", service.osnID);
+            data.put("logoutTime", userData.logoutTime);
 
             sendReplyCode(sessionData, null, data);
-            OsnUtils.logInfo("user: " + userData.osnID + ", name: " + userData.name);
+            //logInfo("user: " + userData.osnID + ", name: " + userData.name);
 
             pushOsnID(userData);
 
+            logInfo("Login_share[success]" + userData.osnID + ", name: " + userData.name);
+
         } catch (Exception e) {
-            OsnUtils.logError(e);
+            logError(e);
         }
+
         return null;
+    }
+    private Void Login(SessionData sessionData) {
+        return imShare ? Login_share(sessionData) : Login_key(sessionData);
     }
     private Void Logout(SessionData sessionData){
         try {
@@ -703,11 +895,12 @@ public class OsnIMServer extends OsnServer {
             UserData userData = getUserData(userID);
             if(userData != null){
                 logInfo("userID: "+userID);
+                delUserData(userData);
                 popOsnID(userID);
             }
             sendReplyCode(sessionData, null, null);
         } catch (Exception e) {
-            OsnUtils.logError(e);
+            logError(e);
         }
         return null;
     }
@@ -717,7 +910,7 @@ public class OsnIMServer extends OsnServer {
             String userID = json.getString("from");
             String friendID = json.getString("to");
 
-            OsnUtils.logInfo("userID: " + userID + ", friendID: " + friendID);
+            logInfo("userID: " + userID + ", friendID: " + friendID);
 
             if (sessionData.remote) {
                 FriendData friendData = db.readFriend(friendID, userID);
@@ -755,7 +948,7 @@ public class OsnIMServer extends OsnServer {
             ErrorData error = forwardMessage(sessionData, json);
             sendReplyCode(sessionData, error, null);
         } catch (Exception e) {
-            OsnUtils.logError(e);
+            logError(e);
         }
         return null;
     }
@@ -766,7 +959,7 @@ public class OsnIMServer extends OsnServer {
             String userID = json.getString("from");
             String friendID = data.getString("friendID");
 
-            OsnUtils.logInfo("userID: " + userID + ", friendID: " + friendID);
+            logInfo("userID: " + userID + ", friendID: " + friendID);
 
             if (!db.isFriend(userID, friendID)) {
                 logInfo("no find friend: " + friendID);
@@ -787,7 +980,7 @@ public class OsnIMServer extends OsnServer {
             json = makeMessage("FriendUpdate", service.osnID, userID, data, service.osnKey, null);
             sendClientJson(sessionData, json);
         } catch (Exception e) {
-            OsnUtils.logError(e);
+            logError(e);
         }
         return null;
     }
@@ -797,7 +990,7 @@ public class OsnIMServer extends OsnServer {
             String userID = json.getString("from");
             String friendID = json.getString("to");
 
-            OsnUtils.logInfo("userID: " + userID + ", friendID: " + friendID);
+            logInfo("userID: " + userID + ", friendID: " + friendID);
 
             FriendData friendData;
             if (sessionData.remote) {
@@ -821,7 +1014,7 @@ public class OsnIMServer extends OsnServer {
                     forwardMessage(sessionData, json);
             }
         } catch (Exception e) {
-            OsnUtils.logError(e);
+            logError(e);
         }
         return null;
     }
@@ -836,9 +1029,9 @@ public class OsnIMServer extends OsnServer {
                 db.deleteFriend(userID, friendID);
             sendReplyCode(sessionData, null, null);
 
-            OsnUtils.logInfo("userID: " + userID + ", friendID: " + friendID);
+            logInfo("userID: " + userID + ", friendID: " + friendID);
         } catch (Exception e) {
-            OsnUtils.logError(e);
+            logError(e);
         }
         return null;
     }
@@ -847,7 +1040,7 @@ public class OsnIMServer extends OsnServer {
             ErrorData error = forwardMessage(sessionData, sessionData.json);
             sendReplyCode(sessionData, error, null);
         } catch (Exception e) {
-            OsnUtils.logError(e);
+            logError(e);
         }
         return null;
     }
@@ -888,7 +1081,7 @@ public class OsnIMServer extends OsnServer {
                 sendReplyCode(sessionData, null, null);
             }
         } catch (Exception e) {
-            OsnUtils.logError(e);
+            logError(e);
         }
         return null;
     }
@@ -906,16 +1099,17 @@ public class OsnIMServer extends OsnServer {
 
             List<MessageData> messageInfos = db.syncMessages(userID, timeStamp, count);
             JSONArray array = new JSONArray();
-            for (MessageData messageData : messageInfos)
+            for (MessageData messageData : messageInfos){
+                toWebMessage(sessionData, messageData);
                 array.add(messageData.data);
-
+            }
             data.clear();
             data.put("msgList", array);
             sendReplyCode(sessionData, null, data);
 
-            OsnUtils.logInfo("userID: " + userID + ", timestamp: " + timeStamp + ", count: " + count + ", size: " + array.size());
+            logInfo("userID: " + userID + ", timestamp: " + timeStamp + ", count: " + count + ", size: " + array.size());
         } catch (Exception e) {
-            OsnUtils.logError(e);
+            logError(e);
         }
         return null;
     }
@@ -943,9 +1137,9 @@ public class OsnIMServer extends OsnServer {
             data.put("msgList", array);
             sendReplyCode(sessionData, null, data);
 
-            OsnUtils.logInfo("userID: " + userID + ", target: " + target + ", timestamp: " + timeStamp + ", before: " + before + ", count: " + count + ", result: " + array.size());
+            logInfo("userID: " + userID + ", target: " + target + ", timestamp: " + timeStamp + ", before: " + before + ", count: " + count + ", result: " + array.size());
         } catch (Exception e) {
-            OsnUtils.logError(e);
+            logError(e);
         }
         return null;
     }
@@ -955,11 +1149,11 @@ public class OsnIMServer extends OsnServer {
             String from = json.getString("from");
             String to = json.getString("to");
 
-            OsnUtils.logInfo("from: " + from + ", to: " + to + ", remote: " + sessionData.remote);
+            logInfo("from: " + from + ", to: " + to + ", remote: " + sessionData.remote);
 
             if (sessionData.remote) {
                 JSONObject data = sessionData.toUser.toJson();
-                JSONObject result = wrapMessage("UserInfo", service.osnID, from, data, service.osnKey, json);
+                JSONObject result = wrapMessageX("UserInfo", sessionData.toUser, from, data, json);
                 sendOsxJson(result);
             } else {
                 if (to == null || !to.startsWith("OSNU")) {
@@ -969,14 +1163,14 @@ public class OsnIMServer extends OsnServer {
                 UserData userData = getUserData(to);
                 if (userData != null) {
                     JSONObject data = userData.toJson();
-                    data = wrapMessage("UserInfo", service.osnID, from, data, service.osnKey, json);
+                    data = wrapMessageX("UserInfo", userData, from, data, json);
                     sendClientJson(sessionData, data);
                 } else {
                     sendOsxJson(json);
                 }
             }
         } catch (Exception e) {
-            OsnUtils.logError(e);
+            logError(e);
         }
         return null;
     }
@@ -984,7 +1178,7 @@ public class OsnIMServer extends OsnServer {
         try {
             JSONObject data = sessionData.data;
 
-            OsnUtils.logInfo(data.toString());
+            logInfo(data.toString());
 
             UserData userData = sessionData.fromUser;
             UserData userNotify = new UserData();
@@ -1016,7 +1210,7 @@ public class OsnIMServer extends OsnServer {
                 forwardMessage(sessionData, json);
             }
         } catch (Exception e) {
-            OsnUtils.logError(e);
+            logError(e);
         }
         return null;
     }
@@ -1036,14 +1230,14 @@ public class OsnIMServer extends OsnServer {
 
             logInfo("userID: " + json.getString("from") + ", friendList: " + friendList.size());
         } catch (Exception e) {
-            OsnUtils.logError(e);
+            logError(e);
         }
         return null;
     }
     private Void GetFriendInfo(SessionData sessionData) {
         try {
             JSONObject data = sessionData.data;
-            OsnUtils.logInfo(data.toString());
+            logInfo(data.toString());
 
             String friendID = data.getString("friendID");
             FriendData friendData = db.readFriend(sessionData.user.osnID, friendID);
@@ -1055,14 +1249,14 @@ public class OsnIMServer extends OsnServer {
             JSONObject result = makeMessage("FriendInfo", service.osnID, sessionData.fromUser.osnID, friendData.toJson(), service.osnKey, sessionData.json);
             sendClientJson(sessionData, result);
         } catch (Exception e) {
-            OsnUtils.logError(e);
+            logError(e);
         }
         return null;
     }
     private Void SetFriendInfo(SessionData sessionData) {
         try {
             JSONObject data = sessionData.data;
-            OsnUtils.logInfo(data.toString());
+            logInfo(data.toString());
 
             FriendData friendData = new FriendData();
             friendData.userID = sessionData.user.osnID;
@@ -1088,7 +1282,7 @@ public class OsnIMServer extends OsnServer {
             else if (friendData.state == FriendStatus_Normal)
                 sessionData.fromUser.delBlack(friendData.friendID);
         } catch (Exception e) {
-            OsnUtils.logError(e);
+            logError(e);
         }
         return null;
     }
@@ -1112,7 +1306,7 @@ public class OsnIMServer extends OsnServer {
                 completeMessage(data, false);
             }
         } catch (Exception e) {
-            OsnUtils.logError(e);
+            logError(e);
         }
         return null;
     }
@@ -1131,7 +1325,7 @@ public class OsnIMServer extends OsnServer {
 
             logInfo("userID: " + json.getString("from") + ", conversationList: " + conversationList.size());
         } catch (Exception e) {
-            OsnUtils.logError(e);
+            logError(e);
         }
         return null;
     }
@@ -1150,7 +1344,7 @@ public class OsnIMServer extends OsnServer {
             logInfo("userID: " + sessionData.user.osnID + ", target: " + target
                     + ", info: " + (info != null ? info.length() : 0));
         } catch (Exception e) {
-            OsnUtils.logError(e);
+            logError(e);
         }
         return null;
     }
@@ -1176,7 +1370,7 @@ public class OsnIMServer extends OsnServer {
 
             logInfo("userID: " + sessionData.user.osnID + ", target: " + target + ", info: " + info);
         } catch (Exception e) {
-            OsnUtils.logError(e);
+            logError(e);
         }
         return null;
     }
@@ -1203,7 +1397,7 @@ public class OsnIMServer extends OsnServer {
 
             logInfo("userID: " + json.getString("from") + ", timestamp: " + timestamp + ", count: " + count + ", size: " + requestList.size());
         } catch (Exception e) {
-            OsnUtils.logError(e);
+            logError(e);
         }
         return null;
     }
@@ -1228,9 +1422,11 @@ public class OsnIMServer extends OsnServer {
             groupData.type = data.containsKey("type") ? data.getIntValue("type") : GroupType_Normal;
             groupData.joinType = data.containsKey("joinType") ? data.getIntValue("joinType") : GroupJoinType_Free;
             groupData.passType = data.containsKey("passType") ? data.getIntValue("passType") : GroupPassType_Free;
+            byte[] aesKey = OsnUtils.getAesKey();       //  add by CESHI, 生成AESKEY
+            groupData.aesKey = Base64.getEncoder().encodeToString(aesKey);      //  add by CESHI, 生成AESKEY，这里只能用base64
             groupData.validType();
 
-            OsnUtils.logInfo("type: " + groupData.type + "[" + groupData.joinType + "], name: " + groupData.name + ", groupID: " + groupData.osnID + ", owner: " + groupData.owner);
+            logInfo("type: " + groupData.type + "[" + groupData.joinType + "], name: " + groupData.name + ", groupID: " + groupData.osnID + ", owner: " + groupData.owner);
 
             MemberData memberData;
             List<MemberData> members = new ArrayList<>();
@@ -1238,16 +1434,30 @@ public class OsnIMServer extends OsnServer {
             for (Object o : userList) {
                 String u = (String) o;
                 if (u.equalsIgnoreCase(owner)) {
-                    memberData = new MemberData(u, groupData.osnID, MemberType_Owner);
-                    groupData.addMember(owner);
+                    //memberData = new MemberData(u, groupData.osnID, MemberType_Owner);
+                    //--------------add by CESHI--------------//
+                    // 生成 receiverKey
+                    String receiverKey = ECUtils.ecEncrypt2(u, aesKey);
+                    memberData = new MemberData(u, groupData.osnID, MemberType_Owner, "", receiverKey);
+                    //--------------add by CESHI end--------------//                   groupData.addMember(owner);
                 } else {
-                    memberData = new MemberData(u, groupData.osnID, MemberType_Wait);
+                    //memberData = new MemberData(u, groupData.osnID, MemberType_Wait);
+                    //--------------add by CESHI--------------//
+                    // 生成 receiverKey
+                    String receiverKey = ECUtils.ecEncrypt2(u, aesKey);
+                    memberData = new MemberData(u, groupData.osnID, MemberType_Wait, "", receiverKey);
+                    //--------------add by CESHI end--------------//
                 }
                 members.add(memberData);
                 logInfo("member: " + u);
             }
             if (!groupData.hasMember(owner)) {
-                memberData = new MemberData(owner, groupData.osnID, MemberType_Owner);
+                //memberData = new MemberData(owner, groupData.osnID, MemberType_Owner);
+                //--------------add by CESHI--------------//
+                // 生成 receiverKey
+                String receiverKey = ECUtils.ecEncrypt2(owner, aesKey);
+                memberData = new MemberData(owner, groupData.osnID, MemberType_Owner, "", receiverKey);
+                //--------------add by CESHI end--------------//
                 members.add(memberData);
                 groupData.addMember(owner);
                 logInfo("add member: " + owner);
@@ -1272,7 +1482,7 @@ public class OsnIMServer extends OsnServer {
             } else
                 sendReplyCode(sessionData, E_dataBase, null);
         } catch (Exception e) {
-            OsnUtils.logError(e);
+            logError(e);
         }
         return null;
     }
@@ -1282,7 +1492,7 @@ public class OsnIMServer extends OsnServer {
             String userID = json.getString("from");
             String groupID = json.getString("to");
 
-            OsnUtils.logInfo("groupID: " + groupID + ", from: " + userID + ", remote: " + sessionData.remote);
+            logInfo("groupID: " + groupID + ", from: " + userID + ", remote: " + sessionData.remote);
 
             GroupData groupData = getMyGroup(sessionData, json);
             if (groupData == null)
@@ -1294,7 +1504,7 @@ public class OsnIMServer extends OsnServer {
             else
                 sendClientJson(sessionData, result);
         } catch (Exception e) {
-            OsnUtils.logError(e);
+            logError(e);
         }
         return null;
     }
@@ -1304,7 +1514,7 @@ public class OsnIMServer extends OsnServer {
             String userID = json.getString("from");
             String groupID = json.getString("to");
 
-            OsnUtils.logInfo("userID: " + userID + ", groupID: " + groupID);
+            logInfo("userID: " + userID + ", groupID: " + groupID);
 
             GroupData groupData = getMyGroup(sessionData, json);
             if (groupData == null) {
@@ -1336,7 +1546,7 @@ public class OsnIMServer extends OsnServer {
                 }
             }
 
-            OsnUtils.logInfo(data.toString());
+            logInfo(data.toString());
 
             GroupData groupNotify = new GroupData();
             groupNotify.osnID = groupID;
@@ -1381,7 +1591,7 @@ public class OsnIMServer extends OsnServer {
                 sendReplyCode(sessionData, E_dataBase, null);
             }
         } catch (Exception e) {
-            OsnUtils.logError(e);
+            logError(e);
         }
         return null;
     }
@@ -1391,7 +1601,7 @@ public class OsnIMServer extends OsnServer {
             String userID = json.getString("from");
             String groupID = json.getString("to");
 
-            OsnUtils.logInfo("userID: " + userID + ", groupID: " + groupID);
+            logInfo("userID: " + userID + ", groupID: " + groupID);
 
             GroupData groupData = getMyGroup(sessionData, json);
             if (groupData == null) {
@@ -1401,7 +1611,7 @@ public class OsnIMServer extends OsnServer {
             }
             joinCheck(sessionData, groupID, userID, json);
         } catch (Exception e) {
-            OsnUtils.logError(e);
+            logError(e);
         }
         return null;
     }
@@ -1411,7 +1621,7 @@ public class OsnIMServer extends OsnServer {
             String userID = json.getString("from");
             String groupID = json.getString("to");
 
-            OsnUtils.logInfo("userID: " + userID + ", groupID: " + groupID);
+            logInfo("userID: " + userID + ", groupID: " + groupID);
 
             GroupData groupData = getMyGroup(sessionData, json);
             if (groupData == null) {
@@ -1427,7 +1637,7 @@ public class OsnIMServer extends OsnServer {
             db.deleteMember(userID, groupID);
             sendReplyCode(sessionData, null, null);
         } catch (Exception e) {
-            OsnUtils.logError(e);
+            logError(e);
         }
         return null;
     }
@@ -1437,7 +1647,7 @@ public class OsnIMServer extends OsnServer {
             String adminID = json.getString("from");
             String groupID = json.getString("to");
 
-            OsnUtils.logInfo("adminID: " + adminID + ", groupID: " + groupID);
+            logInfo("adminID: " + adminID + ", groupID: " + groupID);
 
             GroupData groupData = getMyGroup(sessionData, json);
             if (groupData == null) {
@@ -1464,7 +1674,7 @@ public class OsnIMServer extends OsnServer {
             sendReplyCode(sessionData, null, null);
             newlyMember(groupData, userID);
         } catch (Exception e) {
-            OsnUtils.logError(e);
+            logError(e);
         }
         return null;
     }
@@ -1474,7 +1684,7 @@ public class OsnIMServer extends OsnServer {
             String adminID = json.getString("from");
             String groupID = json.getString("to");
 
-            OsnUtils.logInfo("adminID: " + adminID + ", groupID: " + groupID);
+            logInfo("adminID: " + adminID + ", groupID: " + groupID);
 
             GroupData groupData = getMyGroup(sessionData, json);
             if (groupData == null) {
@@ -1497,7 +1707,7 @@ public class OsnIMServer extends OsnServer {
                 logInfo("deleteMember error");
             sendReplyCode(sessionData, null, null);
         } catch (Exception e) {
-            OsnUtils.logError(e);
+            logError(e);
         }
         return null;
     }
@@ -1507,7 +1717,7 @@ public class OsnIMServer extends OsnServer {
             String userID = json.getString("from");
             String groupID = json.getString("to");
 
-            OsnUtils.logInfo("userID: " + userID + ", groupID: " + groupID);
+            logInfo("userID: " + userID + ", groupID: " + groupID);
 
             GroupData groupData = getMyGroup(sessionData, json);
             if (groupData == null) {
@@ -1559,6 +1769,7 @@ public class OsnIMServer extends OsnServer {
                 sendReplyCode(sessionData, E_maxLimits, null);
                 return null;
             }
+            logInfo("addList: "+addList.size());
             if (!db.insertMembers(addList)) {
                 sendReplyCode(sessionData, E_dataBase, null);
                 return null;
@@ -1568,7 +1779,7 @@ public class OsnIMServer extends OsnServer {
             for (MemberData m : addList)
                 inviteMember(userID, m.osnID, groupData);
         } catch (Exception e) {
-            OsnUtils.logError(e);
+            logError(e);
         }
         return null;
     }
@@ -1578,7 +1789,7 @@ public class OsnIMServer extends OsnServer {
             String userID = json.getString("from");
             String groupID = json.getString("to");
 
-            OsnUtils.logInfo("userID: " + userID + ", groupID: " + groupID);
+            logInfo("userID: " + userID + ", groupID: " + groupID);
 
             GroupData groupData = getMyGroup(sessionData, json);
             if (groupData == null) {
@@ -1625,27 +1836,32 @@ public class OsnIMServer extends OsnServer {
 
             groupData.delMembers(delList);
         } catch (Exception e) {
-            OsnUtils.logError(e);
+            logError(e);
         }
         return null;
     }
     private Void InviteGroup(SessionData sessionData) {
         try {
             JSONObject json = sessionData.json;
-            JSONObject data = takeMessage(json);
-            if (data == null) {
-                sendReplyCode(sessionData, E_cryptError, null);
-                return null;
+            if(imShare){
+                String userID = json.getString("to");
+                sendUserJson(userID, json);
+            } else {
+                JSONObject data = takeMessage(json);
+                if (data == null) {
+                    sendReplyCode(sessionData, E_cryptError, null);
+                    return null;
+                }
+                String groupID = json.getString("from");
+                String userID = json.getString("to");
+
+                logInfo("groupID: " + groupID + ", userID: " + userID);
+
+                String originalUser = data.getString("originalUser");
+                inviteCheck(true, sessionData.toUser, groupID, originalUser, json);
             }
-            String groupID = json.getString("from");
-            String userID = json.getString("to");
-
-            OsnUtils.logInfo("groupID: " + groupID + ", userID: " + userID);
-
-            String originalUser = data.getString("originalUser");
-            inviteCheck(true, sessionData.toUser, groupID, originalUser, json);
         } catch (Exception e) {
-            OsnUtils.logError(e);
+            logError(e);
         }
         return null;
     }
@@ -1655,7 +1871,7 @@ public class OsnIMServer extends OsnServer {
             String userID = json.getString("from");
             String groupID = json.getString("to");
 
-            OsnUtils.logInfo("groupID: " + groupID + ", from: " + userID + ", remote: " + sessionData.remote);
+            logInfo("groupID: " + groupID + ", from: " + userID + ", remote: " + sessionData.remote);
 
             GroupData groupData = getMyGroup(sessionData, json);
             if (groupData == null)
@@ -1679,7 +1895,7 @@ public class OsnIMServer extends OsnServer {
                 sendClientJson(sessionData, result);
             logInfo("size: " + members.size());
         } catch (Exception e) {
-            OsnUtils.logError(e);
+            logError(e);
         }
         return null;
     }
@@ -1689,7 +1905,7 @@ public class OsnIMServer extends OsnServer {
             String userID = json.getString("from");
             String groupID = json.getString("to");
 
-            OsnUtils.logInfo("userID: " + userID + ", groupID: " + groupID);
+            logInfo("userID: " + userID + ", groupID: " + groupID);
 
             GroupData groupData = getMyGroup(sessionData, json);
             if (groupData == null) {
@@ -1707,7 +1923,7 @@ public class OsnIMServer extends OsnServer {
                 return null;
             }
 
-            OsnUtils.logInfo(data.toString());
+            logInfo(data.toString());
 
             MemberData memberInfo = new MemberData();
             memberInfo.groupID = groupID;
@@ -1731,7 +1947,7 @@ public class OsnIMServer extends OsnServer {
                 sendReplyCode(sessionData, E_dataBase, null);
             }
         } catch (Exception e) {
-            OsnUtils.logError(e);
+            logError(e);
         }
         return null;
     }
@@ -1741,7 +1957,7 @@ public class OsnIMServer extends OsnServer {
             String userID = json.getString("from");
             String groupID = json.getString("to");
 
-            OsnUtils.logInfo("userID: " + userID + ", groupID: " + groupID);
+            logInfo("userID: " + userID + ", groupID: " + groupID);
 
             GroupData groupData = getMyGroup(sessionData, json);
             if (groupData == null) {
@@ -1769,9 +1985,9 @@ public class OsnIMServer extends OsnServer {
             notifyGroup(groupData, data);
 
             groupData.delMember(userID);
-            OsnUtils.logInfo(data.toString());
+            logInfo(data.toString());
         } catch (Exception e) {
-            OsnUtils.logError(e);
+            logError(e);
         }
         return null;
     }
@@ -1781,7 +1997,7 @@ public class OsnIMServer extends OsnServer {
             String userID = json.getString("from");
             String groupID = json.getString("to");
 
-            OsnUtils.logInfo("userID: " + userID + ", groupID: " + groupID);
+            logInfo("userID: " + userID + ", groupID: " + groupID);
 
             GroupData groupData = getMyGroup(sessionData, json);
             if (groupData == null) {
@@ -1810,7 +2026,7 @@ public class OsnIMServer extends OsnServer {
 
             groupMap.remove(groupID);
         } catch (Exception e) {
-            OsnUtils.logError(e);
+            logError(e);
         }
         return null;
     }
@@ -1819,66 +2035,68 @@ public class OsnIMServer extends OsnServer {
             JSONObject json = sessionData.json;
             String userID = json.getString("from");
 
-            OsnUtils.logInfo("userID: " + userID);
+            logInfo("userID: " + userID);
 
             List<String> groupList = db.listGroup(sessionData.fromUser.osnID, false);
             JSONObject data = new JSONObject();
             data.put("groupList", groupList);
-            OsnUtils.logInfo("groupList: " + groupList.size());
+            logInfo("groupList: " + groupList.size());
 
             JSONObject result = makeMessage("GroupList", service.osnID, sessionData.fromUser.osnID, data, service.osnKey, json);
             sendClientJson(sessionData, result);
         } catch (Exception e) {
-            OsnUtils.logError(e);
+            logError(e);
         }
         return null;
     }
     private Void GroupUpdate(SessionData sessionData) {
         try {
             JSONObject json = sessionData.json;
-            JSONObject data = takeMessage(json);
-            if (data == null) {
-                sendReplyCode(sessionData, E_cryptError, null);
-                return null;
-            }
-            String userID = json.getString("to");
-            String groupID = json.getString("from");
-
-            logInfo(data.toString());
-
-            String state = data.getString("state");
-            if (state.equalsIgnoreCase("DelGroup")) {
-                if (sessionData.toUser.hasGroup(groupID)) {
-                    db.deleteMember(userID, groupID);
-                    sessionData.toUser.delGroup(groupID);
+            if(!imShare){
+                JSONObject data = takeMessage(json);
+                if (data == null) {
+                    sendReplyCode(sessionData, E_cryptError, null);
+                    return null;
                 }
-            } else if (state.equalsIgnoreCase("DelMember") ||
-                    state.equalsIgnoreCase("QuitGroup")) {
-                JSONArray members = data.getJSONArray("userList");
-                for (Object o : members) {
-                    if (userID.equalsIgnoreCase((String) o)) {
+                String userID = json.getString("to");
+                String groupID = json.getString("from");
+
+                logInfo(data.toString());
+
+                String state = data.getString("state");
+                if (state.equalsIgnoreCase("DelGroup")) {
+                    if (sessionData.toUser.hasGroup(groupID)) {
                         db.deleteMember(userID, groupID);
                         sessionData.toUser.delGroup(groupID);
-                        break;
                     }
-                }
-            } else if (state.equalsIgnoreCase("AddMember")) {
-                JSONArray members = data.getJSONArray("userList");
-                for (Object o : members) {
-                    if (userID.equalsIgnoreCase((String) o)) {
-                        MemberData memberData = getMemberData(groupID, userID);
-                        if (memberData.type == MemberType_Wait) {
-                            logInfo("update member type to Normal, memberID: " + userID + ", groupID: " + groupID);
-                            memberData.type = MemberType_Normal;
-                            db.updateMember(memberData, Collections.singletonList("type"));
+                } else if (state.equalsIgnoreCase("DelMember") ||
+                        state.equalsIgnoreCase("QuitGroup")) {
+                    JSONArray members = data.getJSONArray("userList");
+                    for (Object o : members) {
+                        if (userID.equalsIgnoreCase((String) o)) {
+                            db.deleteMember(userID, groupID);
+                            sessionData.toUser.delGroup(groupID);
+                            break;
                         }
-                        break;
+                    }
+                } else if (state.equalsIgnoreCase("AddMember")) {
+                    JSONArray members = data.getJSONArray("userList");
+                    for (Object o : members) {
+                        if (userID.equalsIgnoreCase((String) o)) {
+                            MemberData memberData = getMemberData(groupID, userID);
+                            if (memberData.type == MemberType_Wait) {
+                                logInfo("update member type to Normal, memberID: " + userID + ", groupID: " + groupID);
+                                memberData.type = MemberType_Normal;
+                                db.updateMember(memberData, Collections.singletonList("type"));
+                            }
+                            break;
+                        }
                     }
                 }
             }
             Forwarder(sessionData);
         } catch (Exception e) {
-            OsnUtils.logError(e);
+            logError(e);
         }
         return null;
     }
@@ -1891,7 +2109,7 @@ public class OsnIMServer extends OsnServer {
             if (serviceID == null)
                 return null;
 
-            OsnUtils.logInfo("serviceID: " + serviceID + ", from: " + userID + ", remote: " + sessionData.remote);
+            logInfo("serviceID: " + serviceID + ", from: " + userID + ", remote: " + sessionData.remote);
 
             JSONObject result = null;
             if (serviceID.equalsIgnoreCase(service.osnID)) {
@@ -1918,7 +2136,7 @@ public class OsnIMServer extends OsnServer {
                     sendOsxJson(json);
             }
         } catch (Exception e) {
-            OsnUtils.logError(e);
+            logError(e);
         }
         return null;
     }
@@ -1935,38 +2153,40 @@ public class OsnIMServer extends OsnServer {
 
         for (Object o : targetList) {
             String osnID = (String) o;
-            String signData = null;
-            CryptData cryptData = null;
             if (isUser(osnID)) {
                 UserData userData = getUserData(osnID);
-                if(userData != null){
-                    cryptData = userData;
-                    JSONObject cert = userData.getUserCert();
-                    if(cert != null){
-                        signData = cert.toString();
+                if (userData != null) {
+                    JSONObject data = new JSONObject();
+                    data.put("osnID", userData.osnID);
+                    if(imShare){
+                        JSONObject cert = userData.getUserCert();
+                        if (cert != null) {
+                            data.put("userCert", cert.toString());
+                            findedList.add(data);
+                        } else {
+                            logInfo("user no cert: " + userData.name);
+                        }
                     } else {
-                        logInfo("user no cert: "+userData.name);
+                        data.put("sign", ECUtils.osnSign(userData.osnKey, timeStamp.getBytes()));
+                        findedList.add(data);
                     }
                 }
-            } else if (isGroup(osnID)) {
-                cryptData = getGroupData(osnID);
-                if(cryptData != null){
-                    signData = ECUtils.osnSign(cryptData.osnKey, timeStamp.getBytes());
+            } else {
+                CryptData cryptData = null;
+                if (isGroup(osnID)) {
+                    cryptData = getGroupData(osnID);
+                } else if (isService(osnID)) {
+                    if (osnID.equalsIgnoreCase(service.osnID))
+                        cryptData = service;
+                    if (cryptData == null)
+                        cryptData = getLitappData(osnID);
                 }
-            } else if (isService(osnID)) {
-                if (osnID.equalsIgnoreCase(service.osnID))
-                    cryptData = service;
-                if (cryptData == null)
-                    cryptData = getLitappData(osnID);
-                if(cryptData != null){
-                    signData = ECUtils.osnSign(cryptData.osnKey, timeStamp.getBytes());
+                if (cryptData != null) {
+                    JSONObject data = new JSONObject();
+                    data.put("osnID", cryptData.osnID);
+                    data.put("sign", ECUtils.osnSign(cryptData.osnKey, timeStamp.getBytes(StandardCharsets.UTF_8)));
+                    findedList.add(data);
                 }
-            }
-            if (signData != null) {
-                JSONObject data = new JSONObject();
-                data.put("osnID", cryptData.osnID);
-                data.put("sign", signData);
-                findedList.add(data);
             }
         }
         if (!findedList.isEmpty()) {
@@ -1978,7 +2198,7 @@ public class OsnIMServer extends OsnServer {
             data.put("targetList", findedList);
             sendOsxJson(data);
 
-            OsnUtils.logInfo("send findedList: " + findedList + ", ip: " + json.getString("ip"));
+            logInfo("send findedList: " + findedList + ", ip: " + json.getString("ip"));
         }
         return null;
     }
@@ -2005,6 +2225,28 @@ public class OsnIMServer extends OsnServer {
                     }
                     break;
                 case "getStoreInfo":
+                    getStoreInfo(data);
+                    break;
+                case "findService":
+                    sendReplyCode(sessionData, null, null);
+
+                    List<LitappData> serviceInfos = new ArrayList<>();
+                    String name = data.getString("keyword");
+                    if(name != null){
+                        List<LitappData> litappList = db.listLitapp();
+                        for(LitappData litappData : litappList){
+                            if(litappData.name.contains(name)){
+                                serviceInfos.add(litappData);
+                            }
+                        }
+                        if(!serviceInfos.isEmpty()){
+                            data = new JSONObject();
+                            data.put("type", "infos");
+                            data.put("litapps", serviceInfos);
+                            data = wrapMessage("ServiceInfo", service.osnID, userID, data, service.osnKey, json);
+                            sendUserJson(userID, data);
+                        }
+                    }
                     break;
             }
         } catch (Exception e){
@@ -2042,12 +2284,87 @@ public class OsnIMServer extends OsnServer {
         sendUserJson(to, json);
         return null;
     }
+    void processCommand(JSONObject json){
+        // 1. 解密
+        JSONObject data = takeMessage(json);
+        String command = data.getString("command");
+        String from = json.getString("from");
+        if (from == null || !from.equalsIgnoreCase(manageID)){
+            //如果不是管理ID发来的消息，不用处理
+            return;
+        }
+        if (command.equalsIgnoreCase("nodeRegister")){
+
+        }
+        else if (command.equalsIgnoreCase("userRegister")){
+            logInfo("command:userRegister");
+            // 处理用户注册
+            // 1. 将用户信息注册到表t_user中
+            /*
+            *
+            * msgJson.put("command", "userRegister");
+            msgJson.put("osnid", userData.osnID);
+            msgJson.put("owner", userData.owner2);
+            msgJson.put("hash", userData.hash);
+            * */
+            String osnid = data.getString("osnid");
+            String owner = data.getString("owner");
+            String hash = data.getString("hash");
+            if(osnid == null || owner == null){
+                return;
+            }
+            UserData svData = new UserData();
+            svData.osnID = osnid;
+            svData.osnKey = "";
+            svData.password = "";
+            svData.name = "";
+            svData.aesKey = "";
+            svData.displayName = "";
+            svData.msgKey = "";
+            svData.urlSpace = "";
+            svData.owner2 = owner;
+            if (db.insertUser(svData)){
+                // 2. 发送命令给from
+
+                /*
+                 * command reUserRegister
+                 * osnid
+                 * owner
+                 * ip
+                 * serviceID
+                 * hash  //如果当前hash不对，则表示已经过期
+                 * */
+                JSONObject content = new JSONObject();
+                content.put("command", "reUserRegister");
+                content.put("osnid", osnid);
+                content.put("ip", ipIMServer);
+                content.put("serviceID", serviceID);
+                content.put("hash", hash);
+
+                logInfo("content:"+ content.toString());
+                JSONObject msgJson = makeMessage("Message", serviceID, manageID, content, serviceKey, null);
+                sendUserJson(manageID, msgJson);
+            }
+
+        }
+
+
+    }
     public void handleMessage(SessionData sessionData) {
         try {
             JSONObject json = sessionData.json;
             if (!sessionData.remote)
                 sessionData.timeHeart = System.currentTimeMillis();
+
             String command = json.getString("command");
+
+            String to = json.getString("to");
+
+            if(to != null && to.equalsIgnoreCase(serviceID)){
+                //处理command
+                processCommand(json);
+                return;
+            }
             CommandData commandData = getCommand(command);
             if (commandData == null) {
                 logInfo("unknown command: " + command);
@@ -2060,7 +2377,7 @@ public class OsnIMServer extends OsnServer {
                     sendReplyCode(sessionData, E_timeSync, null);
                     return;
                 }
-                String to = json.getString("to");
+                //String to = json.getString("to");
                 String from = json.getString("from");
                 if (sessionData.remote) {
                     if (isGroup(to)) {
@@ -2168,7 +2485,7 @@ public class OsnIMServer extends OsnServer {
             }
             commandData.run.apply(sessionData);
         } catch (Exception e) {
-            OsnUtils.logError(e);
+            logError(e);
         }
     }
 }

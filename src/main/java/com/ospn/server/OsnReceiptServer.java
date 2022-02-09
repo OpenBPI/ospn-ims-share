@@ -2,7 +2,7 @@ package com.ospn.server;
 
 import com.alibaba.fastjson.JSON;
 import com.alibaba.fastjson.JSONObject;
-import com.ospn.Constant;
+import com.ospn.data.Constant;
 import com.ospn.OsnIMServer;
 import com.ospn.core.IMData;
 import com.ospn.data.CryptData;
@@ -16,21 +16,21 @@ import static com.ospn.utils.CryptUtils.wrapMessage;
 
 public class OsnReceiptServer {
     public static void worker(){
-        db.clearReceipts();
+        OsnIMServer.db.clearReceipts();
         while(true){
             try{
                 long timeBase = System.currentTimeMillis();
-                List<MessageData> msgList = db.queryReceipts();
+                List<MessageData> msgList = OsnIMServer.db.queryReceipts();
                 for(MessageData m:msgList){
                     if(timeBase < m.timeStamp)
                         continue;
                     long diff = timeBase - m.timeStamp;
                     if(diff > 60*5*1000)
-                        db.updateReceipt(m.hash, Constant.ReceiptStatus_Error);
+                        OsnIMServer.db.updateReceipt(m.hash, Constant.ReceiptStatus_Error);
                     else if(diff > 30 * 1000){
                         CryptData cryptData = IMData.getCryptData(m.fromID);
                         if(cryptData == null)
-                            db.updateReceipt(m.hash, Constant.ReceiptStatus_Error);
+                            OsnIMServer.db.updateReceipt(m.hash, Constant.ReceiptStatus_Error);
                         else {
                             try {
                                 JSONObject data = JSON.parseObject(m.data);
@@ -39,7 +39,7 @@ public class OsnReceiptServer {
                             }
                             catch (Exception e){
                                 logError(e);
-                                db.updateReceipt(m.hash, Constant.ReceiptStatus_Error);
+                                OsnIMServer.db.updateReceipt(m.hash, Constant.ReceiptStatus_Error);
                             }
                         }
                     }

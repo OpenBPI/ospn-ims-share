@@ -99,8 +99,9 @@ public class OsnWSServer extends SimpleChannelInboundHandler<Object> {
             UserData userData = sessionData.user;
             logInfo("user: " + (userData == null ? "null" : userData.name));
             delSessionData(sessionData);
+        } else {
+            ctx.close();
         }
-        ctx.close();
     }
     @Override
     public void exceptionCaught(ChannelHandlerContext ctx, Throwable cause) throws Exception {

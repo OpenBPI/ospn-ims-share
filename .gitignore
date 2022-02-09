@@ -1,3 +1,5 @@
 target/
 out/
 *.class
+libecSSL.so
+ecSSL.dll

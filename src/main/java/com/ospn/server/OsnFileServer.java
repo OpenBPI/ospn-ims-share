@@ -15,16 +15,13 @@ import java.util.concurrent.ConcurrentHashMap;
 
 import static com.ospn.common.OsnUtils.logError;
 import static com.ospn.common.OsnUtils.logInfo;
-import static com.ospn.core.IMData.imHttpPort;
-import static com.ospn.core.IMData.imHttpsPort;
+import static com.ospn.core.IMData.*;
 import static com.ospn.utils.HttpUtils.*;
 
 public class OsnFileServer extends SimpleChannelInboundHandler<HttpObject> {
     private final String ipIMServer;
     private final String dnsIMServer;
-    private final boolean isSsl;
     private final HttpDataFactory factory = new DefaultHttpDataFactory(DefaultHttpDataFactory.MINSIZE);
-    //private final ConcurrentHashMap<ChannelHandlerContext,HttpPostRequestDecoder> decoderMap = new ConcurrentHashMap<>();
     private final ConcurrentHashMap<ChannelHandlerContext,SessionMap> decoderMap = new ConcurrentHashMap<>();
 
     private static class SessionMap{
@@ -38,7 +35,6 @@ public class OsnFileServer extends SimpleChannelInboundHandler<HttpObject> {
     public OsnFileServer(){
         ipIMServer = IMData.prop.getProperty("ipIMServer");
         dnsIMServer = IMData.prop.getProperty("dnsIMServer");
-        isSsl = IMData.prop.getProperty("isSsl").equalsIgnoreCase("true");
     }
 
     void download(ChannelHandlerContext ctx, HttpObject httpObject){
@@ -171,10 +167,10 @@ public class OsnFileServer extends SimpleChannelInboundHandler<HttpObject> {
                                     logInfo("failed rename to file: " + file.getAbsolutePath());
                             }
                             JSONObject json = new JSONObject();
-                            json.put("url", (isSsl ? "https://" : "http://") +
-                                    (dnsIMServer == null || dnsIMServer.isEmpty() ? ipIMServer : dnsIMServer) +
-                                    ":" +
-                                    (isSsl ? imHttpsPort:imHttpPort) + "/?path=" + key);
+                            json.put("url", (isSsl() ? "https://" : "http://") +
+                            (dnsIMServer == null || dnsIMServer.isEmpty() ? ipIMServer : dnsIMServer) +
+                            ":" + imHttpPort + "/?path=" + key);
+
                             sendReply(ctx, json);
 
                             logInfo("key: " + key + ", length: " + fileUpload.length() + " --- end");

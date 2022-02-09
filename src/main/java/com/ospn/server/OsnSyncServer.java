@@ -18,7 +18,7 @@ public class OsnSyncServer {
     private static void worker(){
         String osnID = null;
         while(true){
-            List<UserData> userList = db.listUser(osnID, 100);
+            List<UserData> userList = OsnIMServer.db.listUser(osnID, 100);
             if(userList.isEmpty())
                 break;
             for(UserData userData : userList)
@@ -27,14 +27,14 @@ public class OsnSyncServer {
         }
         osnID = null;
         while(true){
-            List<GroupData> groupList = db.listGroup(osnID, 100);
+            List<GroupData> groupList = OsnIMServer.db.listGroup(osnID, 100);
             if(groupList.isEmpty())
                 break;
             for(GroupData groupData : groupList)
                 OsnIMServer.Inst.pushOsnID(groupData);
             osnID = groupList.get(groupList.size()-1).osnID;
         }
-        List<LitappData> litappList = db.listLitapp();
+        List<LitappData> litappList = OsnIMServer.db.listLitapp();
         for(LitappData litappData : litappList)
             OsnIMServer.Inst.pushOsnID(litappData);
     }
